@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>CSC337 Multi-Tenant B2B SaaS Platform</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 24px; }
+    .container { max-width: 1050px; margin: auto; }
+    .header { display: flex; justify-content: space-between; align-items: center; background: #1e293b; padding: 16px 24px; border-radius: 12px; margin-bottom: 20px; }
+    select, input, button { padding: 10px 14px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #fff; font-size: 14px; }
+    button { background: #2563eb; border: none; cursor: pointer; font-weight: 600; }
+    button:hover { background: #1d4ed8; }
+    button.danger { background: #dc2626; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .card { background: #1e293b; padding: 20px; border-radius: 12px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 14px; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #334155; }
+    pre { background: #020617; padding: 14px; border-radius: 8px; overflow-x: auto; font-size: 13px; color: #38bdf8; }
+    .badge { padding: 3px 8px; border-radius: 6px; font-size: 12px; background: #065f46; color: #6ee7b7; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div>
+        <h2 style="margin:0;">Multi-Tenant B2B SaaS (CSC337 Lab 06)</h2>
+        <small style="color:#94a3b8;">Kafka Event-Driven Orders • PostgreSQL Isolation • Serverless Cold-Start</small>
+      </div>
+      <div>
+        <label>Active Tenant: </label>
+        <select id="tenantSelect" onchange="switchTenant()">
+          <option value="tenant-a">Tenant A (Ali Agri Traders)</option>
+          <option value="tenant-b">Tenant B (Bilal Tech Distributors)</option>
+        </select>
+        <select id="roleSelect" onchange="switchTenant()">
+          <option value="admin">Role: Admin</option>
+          <option value="member">Role: Member (RBAC Test)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>1. Tenant Products & Inventory</h3>
+        <table>
+          <thead><tr><th>ID</th><th>Product</th><th>Price</th><th>Stock</th><th>Action</th></tr></thead>
+          <tbody id="productsBody"></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h3>2. Performance & Security Demos</h3>
+        <div style="display:flex; flex-wrap:wrap; gap:10px;">
+          <button onclick="runNPlusOne()">Run N+1 vs JOIN Benchmark</button>
+          <button onclick="testServerless()">Test Serverless Cold/Warm Start</button>
+          <button class="danger" onclick="testRbacDelete()">Test RBAC Delete (Order #1)</button>
+        </div>
+        <h4>Live Output Console:</h4>
+        <pre id="consoleBox">Ready. Switch tenants or place an order to trigger Kafka...</pre>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:20px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <h3>3. Tenant Orders (Scoped Strictly to Active Tenant)</h3>
+        <button onclick="loadData()">Refresh Orders & Stock</button>
+      </div>
+      <table>
+        <thead><tr><th>Order ID</th><th>Tenant</th><th>Customer</th><th>Total</th><th>Status</th></tr></thead>
+        <tbody id="ordersBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    let jwtToken = '';
+
+    async function switchTenant() {
+      const tenant_id = document.getElementById('tenantSelect').value;
+      const role = document.getElementById('roleSelect').value;
+      const res = await fetch('/api/v1/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenant_id, role })
+      });
+      const data = await res.json();
+      jwtToken = data.accessToken;
+      log(`Switched to ${tenant_id} (${role}) | JWT Issued`);
+      loadData();
+    }
+
+    function authHeaders() {
+      return {
+        'Content-Type': 'application/json',
+        'x-tenant-id': document.getElementById('tenantSelect').value,
+        'Authorization': `Bearer ${jwtToken}`
+      };
+    }
+
+    async function loadData() {
+      const prodRes = await fetch('/api/v1/products', { headers: authHeaders() });
+      const prodData = await prodRes.json();
+      document.getElementById('productsBody').innerHTML = (prodData.products || []).map(p => `
+        <tr>
+          <td>${p.id}</td>
+          <td>${p.name}</td>
+          <td>Rs. ${p.price}</td>
+          <td><b>${p.stock}</b></td>
+          <td><button onclick="placeOrder(${p.id})">Order 1 Qty</button></td>
+        </tr>
+      `).join('');
+
+      const ordRes = await fetch('/api/v1/orders', { headers: authHeaders() });
+      const ordData = await ordRes.json();
+      document.getElementById('ordersBody').innerHTML = (ordData.orders || []).slice(0, 8).map(o => `
+        <tr>
+          <td>#${o.id}</td>
+          <td>${o.tenant_id}</td>
+          <td>${o.customer_name}</td>
+          <td>Rs. ${o.total_amount}</td>
+          <td><span class="badge">${o.status}</span></td>
+        </tr>
+      `).join('');
+    }
+
+    async function placeOrder(productId) {
+      const res = await fetch('/api/v1/orders', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          customer_name: 'Viva Demo Client',
+          items: [{ productId, quantity: 1 }]
+        })
+      });
+      const data = await res.json();
+      log(data);
+      setTimeout(loadData, 800);
+    }
+
+    async function runNPlusOne() {
+      const res = await fetch('/api/v1/benchmark/n-plus-one', { headers: authHeaders() });
+      log(await res.json());
+    }
+
+    async function testServerless() {
+      const res = await fetch('/api/v1/serverless/invoice', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ orderId: 101, amount: 4500 })
+      });
+      log(await res.json());
+    }
+
+    async function testRbacDelete() {
+      const res = await fetch('/api/v1/orders/1', { method: 'DELETE', headers: authHeaders() });
+      log(await res.json());
+    }
+
+    function log(obj) {
+      document.getElementById('consoleBox').textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2);
+    }
+
+    switchTenant();
+  </script>
+</body>
+</html>
